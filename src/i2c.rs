@@ -20,7 +20,7 @@ struct SmbusIoctl { read_write: u8, command: u8, size: u32, data: *mut SmbusData
 /// SPD hubs and EEPROMs live here; writing them can brick a DIMM's profile.
 fn is_protected(addr: u16) -> bool { (0x50..=0x57).contains(&addr) }
 
-pub struct Bus { file: File, pub num: u32, addr: Option<u16>, pub writable: bool }
+pub struct Bus { file: File, addr: Option<u16>, pub writable: bool }
 
 pub struct Adapter { pub num: u32, pub name: String }
 
@@ -39,7 +39,7 @@ impl Bus {
     pub fn open(num: u32, writable: bool) -> Result<Self> {
         let path = format!("/dev/i2c-{num}");
         let file = OpenOptions::new().read(true).write(true).open(&path).with_context(|| format!("open {path}"))?;
-        Ok(Self { file, num, addr: None, writable })
+        Ok(Self { file, addr: None, writable })
     }
 
     /// Select a target. Fails with EBUSY if a kernel driver already owns the address.

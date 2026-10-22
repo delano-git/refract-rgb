@@ -1,4 +1,5 @@
 mod hid;
+mod ene;
 mod i2c;
 mod host;
 
@@ -13,6 +14,8 @@ const USAGE: &str = "refract <command>
   ene-id <bus> <addr>           read an ENE RGB controller's firmware string (0x70-0x77 only)
   ene-color <bus> <addr> <#rrggbb>
                                 solid colour on an ENE V2 DRAM controller (volatile, never saved)
+  apply <#rrggbb> [--plugins DIR] [--dry-run]
+                                set one colour on every supported device found (USB plugins + DRAM)
   sweep <dir>                   dry-run every plugin under <dir>, summarise failures
   run <plugin.js> [--live] [--frames N] [--color #rrggbb] [--hold]
                                 drive a plugin's lifecycle. Without --live no
@@ -49,20 +52,10 @@ fn main() -> Result<()> {
         Some("ene-color") => {
             let n: u32 = a.get(1).context("bus number")?.parse()?;
             let addr = u16::from_str_radix(a.get(2).context("address")?.trim_start_matches("0x"), 16)?;
-            if !(0x70..=0x77).contains(&addr) { bail!("ene-color only drives 0x70-0x77"); }
-            let [r, g, b] = parse_color(a.get(3).context("colour")?)?;
-            let mut bus = i2c::Bus::open(n, true)?;
-            bus.set_addr(addr)?;
-            let id: Vec<u8> = (0..16u16).map(|i| bus.ene_read(0x1000 + i)).collect::<Result<_>>()?;
-            if !id.starts_with(b"AUDA0-E6K5-0101") { bail!("unrecognised firmware {:?}; refusing to write", String::from_utf8_lossy(&id)); }
-            let leds = bus.ene_read(0x1c02)?.max(bus.ene_read(0x1c03)?) as usize;
-            if leds == 0 || leds > 15 { bail!("implausible LED count {leds}"); }
+            let leds = ene::set_color(n, addr, parse_color(a.get(3).context("colour")?)?)?;
             println!("{addr:#04x}: {leds} LEDs");
-            bus.ene_write(0x8020, 1)?;                       // direct mode
-            let data: Vec<u8> = (0..leds).flat_map(|_| [r, b, g]).collect(); // ENE wants R,B,G
-            for (i, chunk) in data.chunks(15).enumerate() { bus.ene_write_block(0x8100 + (i * 15) as u16, chunk)?; }
-            bus.ene_write(0x802f, 1)?;                       // apply (no flash save)
         }
+        Some("apply") => apply(&a[1..])?,
         Some("sweep") => sweep(a.get(1).context("plugins dir")?)?,
         Some("run") => {
             let path = a.get(1).context("plugin path")?;
@@ -131,5 +124,53 @@ fn sweep(dir: &str) -> Result<()> {
     let mut g: Vec<_> = groups.into_iter().collect();
     g.sort_by(|a, b| b.1.cmp(&a.1));
     for (k, n) in g.iter().take(25) { println!("{n:4}  {k}"); }
+    Ok(())
+}
+
+/// Plugin directory: --plugins, $REFRACT_PLUGINS, or the extracted vendor tree if present.
+fn plugins_dir(a: &[String]) -> Option<std::path::PathBuf> {
+    a.iter().position(|x| x == "--plugins").and_then(|i| a.get(i + 1)).map(Into::into)
+        .or_else(|| std::env::var_os("REFRACT_PLUGINS").map(Into::into))
+        .or_else(|| Some("extracted/stage3/lib/net45/Signal-x64/Plugins".into()).filter(|p: &std::path::PathBuf| p.is_dir()))
+}
+
+fn apply(a: &[String]) -> Result<()> {
+    let color = parse_color(a.first().context("colour #rrggbb")?)?;
+    let live = !a.iter().any(|x| x == "--dry-run");
+    let dir = plugins_dir(a).context("no plugin directory: pass --plugins DIR or set REFRACT_PLUGINS")?;
+    let mut files = Vec::new();
+    walk(&dir, &mut files);
+    files.sort();
+
+    // USB/HID devices: run every plugin whose VID/PID matches a connected device, once per node.
+    let devices = hid::enumerate();
+    let mut claimed: std::collections::HashSet<String> = Default::default();
+    for f in &files {
+        let Ok(src) = fs::read_to_string(f) else { continue };
+        let Ok(info) = host::inspect(&src) else { continue };
+        let cands: Vec<_> = devices.iter()
+            .filter(|d| info.vendor_id == Some(d.vendor_id) && info.product_ids.contains(&d.product_id) && !claimed.contains(&d.node))
+            .cloned().collect();
+        if cands.is_empty() { continue; }
+        let opts = host::RunOpts { live, frames: 3, color, hold: true };
+        match host::run(&src, cands.clone(), opts) {
+            Ok(r) if r.writes > 0 && r.selected.is_some() => {
+                let node = r.selected.map(|d| d.node).unwrap_or_default();
+                println!("ok    {:<32} {node} ({} writes)", info.name, r.writes);
+                claimed.extend(cands.into_iter().map(|d| d.node));
+            }
+            Ok(_) => println!("skip  {:<32} no endpoint accepted", info.name),
+            Err(e) => println!("FAIL  {:<32} {}", info.name, format!("{e:#}").lines().next().unwrap_or("")),
+        }
+    }
+
+    // DRAM: ENE controllers sit at each SPD hub address + 0x20.
+    for (bus, addr) in ene::find_dram() {
+        if !live { println!("plan  ENE DRAM i2c-{bus} {addr:#04x}"); continue; }
+        match ene::set_color(bus, addr, color) {
+            Ok(n) => println!("ok    ENE DRAM i2c-{bus} {addr:#04x} ({n} LEDs)"),
+            Err(e) => println!("FAIL  ENE DRAM i2c-{bus} {addr:#04x} {e:#}"),
+        }
+    }
     Ok(())
 }

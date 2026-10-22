@@ -19,3 +19,12 @@ SignalRGB `device` API and `@SignalRGB/*` module shims, Linux DMI in place of WM
     ./target/debug/refract run <plugin.js> --live         # sends bytes to the device
 
 Plugins are not included; point the tool at a SignalRGB `Plugins/` directory.
+
+## Lighting everything
+
+    refract apply '#00ff40' [--plugins DIR] [--dry-run]
+
+Runs every plugin whose VID/PID matches a connected device, plus ENE DDR5 RAM
+over SMBus. Plugin dir: `--plugins`, `$REFRACT_PLUGINS`, or the extracted tree.
+Setup: `sudo cp contrib/70-refract-rgb.rules /etc/udev/rules.d/`, reload udev,
+and be in `plugdev`. DRAM writes are volatile and never touch SPD space.
