@@ -27,6 +27,7 @@
   .dot.running { background: var(--ok); } .dot.error { background: var(--bad); } .dot.unsupported { background: var(--warn); }
   .follow { color: var(--muted); font-size: 13px; margin: 6px 0 0 19px; }
 
+  .strip { height: 10px; border-radius: 5px; background: var(--inset); margin-bottom: 4px; }
   .panel { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
   .row { display: flex; align-items: center; gap: 12px; margin: 9px 0; }
   .row > label:first-child, .row > .lbl { width: 112px; flex: none; color: var(--muted); font-size: 14px; }
@@ -211,7 +212,8 @@ function makePanel(target) {
   const r1 = row("Colour", c1), r2 = row("Second colour", c2);
   const rs = row("Speed", speed.inp, speed.out), rb = row("Brightness", bright.inp, bright.out);
   const extra = el("div");
-  const el_ = el("div", { className: "panel" },
+  const strip = el("div", { className: "strip", title: "What this is showing right now" });
+  const el_ = el("div", { className: "panel" }, strip,
     row("Lights", el("label", { className: "tog" }, on, el("span"))),
     row("Effect", sel), r1, r2, extra, rs, rb);
 
@@ -243,7 +245,7 @@ function makePanel(target) {
   }
 
   return {
-    el: el_,
+    el: el_, strip,
     update(p, effects) {
       cur = p;
       const es = effects.map((e) => e.id).join();
@@ -324,7 +326,16 @@ async function poll(force) {
     render(S);
   } catch { $("offline").style.display = "inline"; }
 }
-poll(); setInterval(poll, 1500);
+// Live colour strips: a separate, faster poll so animation is visible without re-reading the whole state.
+async function previews() {
+  if (!panels.size) return;
+  try {
+    const q = [...panels.keys()].map((t) => "t=" + encodeURIComponent(t)).join("&");
+    const r = await (await fetch("/api/preview?" + q)).json();
+    for (const [t, h] of panels) if (r[t]) h.strip.style.background = "linear-gradient(to right," + r[t].join(",") + ")";
+  } catch {}
+}
+poll(); setInterval(poll, 1500); setInterval(previews, 250);
 </script>
 </body>
 </html>

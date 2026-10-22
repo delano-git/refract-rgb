@@ -1,6 +1,8 @@
 mod hid;
+mod canvas;
 mod daemon;
 mod ene;
+mod effects;
 mod engine;
 mod fx;
 mod i2c;
@@ -23,6 +25,7 @@ const USAGE: &str = "refract <command>
                                 set one colour on every supported device found (USB plugins + DRAM)
   daemon [--plugins DIR]        run the app: effects engine, tray icon, web UI on 127.0.0.1:7878
   install-service               autostart the daemon at login (systemd user unit)
+  canvas-test <effects-dir> <id>  render a SignalRGB HTML effect in Chrome and print sampled colours
   sweep <dir>                   dry-run every plugin under <dir>, summarise failures
   run <plugin.js> [--live] [--frames N] [--color #rrggbb] [--hold]
                                 drive a plugin's lifecycle. Without --live no
@@ -63,6 +66,19 @@ fn main() -> Result<()> {
             println!("{addr:#04x}: {leds} LEDs");
         }
         Some("daemon") => daemon::run(a.iter().position(|x| x == "--plugins").and_then(|i| a.get(i + 1)).map(Into::into))?,
+        Some("canvas-test") => {
+            let dir = std::path::PathBuf::from(a.get(1).context("effects dir")?);
+            let id = a.get(2).context("effect id, e.g. Static/Rainbow")?;
+            let list = std::sync::Arc::new(effects::scan(&dir, "test"));
+            let fx = std::sync::Arc::new(fx::Fx::new(fx::Params { effect: format!("canvas:{id}"), ..Default::default() }, Default::default()));
+            canvas::start(fx.clone(), list, canvas::find_chrome().context("no Chrome found")?);
+            let rounds = std::env::var("REFRACT_TEST_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+            for _ in 0..rounds {
+                std::thread::sleep(std::time::Duration::from_millis(700));
+                let row: Vec<String> = (0..5).map(|i| { let c = fx.color("", "", i as f64 / 4.0, 0.5); format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]) }).collect();
+                println!("{}", row.join(" "));
+            }
+        }
         Some("install-service") => install_service()?,
         Some("apply") => apply(&a[1..])?,
         Some("sweep") => sweep(a.get(1).context("plugins dir")?)?,

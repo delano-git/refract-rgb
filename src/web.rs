@@ -29,6 +29,19 @@ struct Patch {
     opts: Option<BTreeMap<String, Value>>,
 }
 
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < b.len() {
+        let hex = (b[i] == b'%' && i + 2 < b.len()).then(|| std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())).flatten();
+        match hex {
+            Some(v) => { out.push(v); i += 3; }
+            None => { out.push(if b[i] == b'+' { b' ' } else { b[i] }); i += 1; }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 pub fn hex(c: [u8; 3]) -> String { format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]) }
 
 pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
@@ -89,6 +102,18 @@ fn handle(app: &App, mut req: Request, port: u16) -> Result<()> {
             Ok(req.respond(r)?)
         }
         (Method::Get, "/api/state") => Ok(req.respond(json_resp(state(app), 200))?),
+        (Method::Get, u) if u.starts_with("/api/preview?") => {
+            // ?t=<target>&t=<target>: what each target is showing right now, as 24 samples along its length.
+            let mut out = serde_json::Map::new();
+            for pair in u["/api/preview?".len()..].split('&').take(64) {
+                let Some(t) = pair.strip_prefix("t=") else { continue };
+                let t = percent_decode(t);
+                let (dev, zone) = t.split_once('/').unwrap_or((t.as_str(), ""));
+                let strip: Vec<String> = (0..24).map(|i| hex(app.fx.color(dev, zone, i as f64 / 23.0, 0.5))).collect();
+                out.insert(t, json!(strip));
+            }
+            Ok(req.respond(json_resp(Value::Object(out), 200))?)
+        }
         (Method::Post, "/api/params") => {
             if header(&req, "X-Refract").is_none() { return Ok(req.respond(json_resp(json!({"error": "missing X-Refract"}), 403))?); }
             let mut body = String::new();

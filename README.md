@@ -38,7 +38,25 @@ and be in `plugdev`. DRAM writes are volatile and never touch SPD space.
 One process runs the effects engine (one thread per device, restarted if a
 device vanishes or the machine resumes from sleep), a tray icon, and a web UI
 at http://127.0.0.1:7878/. Settings persist in `~/.config/refract-rgb/config.json`.
-Effects: solid, breathing, rainbow wave, colour cycle, gradient wave.
+Built-in effects: solid, breathing, rainbow wave, colour cycle, gradient wave,
+fire, sparkle, scanner, comet, aurora, plasma.
+
+Settings resolve zone > device > everything. A device's zones are the subdevices
+and channels its plugin creates (e.g. the MSI board's ARGB headers). The web UI
+has a card per device with optional custom settings and a per-zone list.
+
+### SignalRGB HTML effects
+
+Effects shipped with SignalRGB (`Effects/` beside `Plugins/`) and any `.html`
+effects dropped in `~/.config/refract-rgb/effects/` appear in the effect list.
+Each runs in a headless Chrome (started on demand, closed 20 s after the last
+canvas effect stops; about 400 MB while running), and its canvas is sampled
+across each zone. Their `<meta property>` controls become UI controls.
+Chrome runs sandboxed with network name resolution disabled.
+Effects that need screen or audio capture (`engine.zone`, `engine.audio`) are
+not offered. Requires `google-chrome` or `chromium` on PATH.
+
+Tests: `cargo test`; `node tools/ui-test.mjs` drives the live UI end to end.
 
 The web API accepts writes only from loopback, with a matching `Host` header
 and an `X-Refract` header, so other web pages cannot drive the lights.

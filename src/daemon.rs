@@ -1,7 +1,8 @@
 //! The long-running app: engine + saved settings + local web UI + tray icon.
+use crate::effects::{self, EffectInfo};
 use crate::engine::Engine;
 use crate::fx::{Fx, Params};
-use crate::{tray, web};
+use crate::{canvas, tray, web};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -27,7 +28,7 @@ fn load() -> Config {
     std::fs::read_to_string(config_path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
-pub struct App { pub fx: Arc<Fx>, pub engine: Arc<Engine>, dirty: AtomicBool, plugins_dir: Option<String> }
+pub struct App { pub fx: Arc<Fx>, pub engine: Arc<Engine>, dirty: AtomicBool, plugins_dir: Option<String>, effects: Arc<Vec<EffectInfo>>, canvas: bool }
 
 impl App {
     /// Change settings for a target ("" = everything, `device`, or `device/zone`); saved shortly after.
@@ -54,7 +55,10 @@ impl App {
     }
 
     /// SignalRGB HTML effects available to show; filled in once the canvas host exists.
-    pub fn canvas_effects(&self) -> Vec<serde_json::Value> { Vec::new() }
+    pub fn canvas_effects(&self) -> Vec<serde_json::Value> {
+        if !self.canvas { return Vec::new(); }
+        self.effects.iter().map(|e| e.json()).collect()
+    }
 
     pub fn quit(&self) -> ! {
         let _ = self.save();
@@ -72,7 +76,18 @@ pub fn run(plugins_override: Option<PathBuf>) -> Result<()> {
     let plugins_dir = plugins_dir.map(|p| std::fs::canonicalize(&p).map(|c| c.display().to_string()).unwrap_or(p));
     let fx = Arc::new(Fx::new(cfg.params, cfg.overrides));
     let engine = Engine::start(fx.clone(), plugins_dir.clone().map(PathBuf::from));
-    let app = Arc::new(App { fx, engine, dirty: AtomicBool::new(plugins_dir != cfg.plugins_dir), plugins_dir });
+    // SignalRGB ships its effects beside its plugins; users can add more under the config dir.
+    let mut list = Vec::new();
+    if let Some(d) = plugins_dir.as_ref().and_then(|p| PathBuf::from(p).parent().map(|x| x.join("Effects"))) { list.extend(effects::scan(&d, "SignalRGB")); }
+    if let Some(d) = config_path().parent().map(|x| x.join("effects")) { list.extend(effects::scan(&d, "Custom")); }
+    let effects = Arc::new(list);
+    let chrome = canvas::find_chrome();
+    match (&chrome, effects.is_empty()) {
+        (Some(c), false) => canvas::start(fx.clone(), effects.clone(), c.clone()),
+        (None, false) => eprintln!("warning: no Chrome/Chromium found; SignalRGB HTML effects are unavailable"),
+        _ => {}
+    }
+    let app = Arc::new(App { fx, engine, dirty: AtomicBool::new(plugins_dir != cfg.plugins_dir), plugins_dir, effects, canvas: chrome.is_some() });
     if app.plugins_dir.is_none() { eprintln!("warning: no plugin directory; USB devices disabled (use --plugins DIR)"); }
 
     let a = app.clone();
