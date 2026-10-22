@@ -151,3 +151,7 @@ Source layout: `src/host.rs` is the plugin host, `src/fx.rs` the effects and ove
 ## Disclaimer
 
 Refract RGB is an independent project and is not affiliated with or endorsed by SignalRGB. Controlling RGB hardware over SMBus carries inherent risk: this project blocks the memory SPD/EEPROM range and never saves memory lighting to flash, but USB plugins run as written by their authors. You use it at your own risk.
+
+## License
+
+[MIT](LICENSE). SignalRGB's plugins and effects are not part of this project and keep their own licences.
