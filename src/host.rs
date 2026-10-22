@@ -20,6 +20,7 @@ pub struct Session {
     pub vid: u16,
     pub pid: u16,
     pub writes: usize,
+    pub color: [u8; 3],
     pub log: Vec<String>,
 }
 type Shared = Rc<RefCell<Session>>;
@@ -121,6 +122,8 @@ fn install(ctx: &Ctx<'_>, s: &Shared) -> rquickjs::Result<()> {
         std::fs::read_to_string(format!("/sys/class/dmi/id/{k}")).ok().map(|v| v.trim().to_string())
     }))?;
     let c = s.clone();
+    g.set("__solid", Function::new(ctx.clone(), move || -> Vec<i32> { c.borrow().color.iter().map(|&v| v as i32).collect() }))?;
+    let c = s.clone();
     g.set("__hidProductId", Function::new(ctx.clone(), move || c.borrow().pid as i32))?;
     let c = s.clone();
     g.set("__hidVendorId", Function::new(ctx.clone(), move || c.borrow().vid as i32))?;
@@ -162,8 +165,11 @@ pub fn inspect(src: &str) -> Result<PluginInfo> {
 pub struct RunReport { pub writes: usize, pub selected: Option<HidInfo>, pub frames: usize }
 
 /// Drive Validate -> Initialize -> Render x frames -> Shutdown against `candidates`.
-pub fn run(src: &str, candidates: Vec<HidInfo>, live: bool, frames: usize) -> Result<RunReport> {
-    let s: Shared = Rc::new(RefCell::new(Session { live, candidates: candidates.clone(), ..Default::default() }));
+pub struct RunOpts { pub live: bool, pub frames: usize, pub color: [u8; 3], pub hold: bool }
+
+pub fn run(src: &str, candidates: Vec<HidInfo>, o: RunOpts) -> Result<RunReport> {
+    let (live, frames) = (o.live, o.frames);
+    let s: Shared = Rc::new(RefCell::new(Session { live, color: o.color, candidates: candidates.clone(), ..Default::default() }));
     with_plugin(src, &s, |ctx, m| {
         let vid: Option<u16> = call_opt(ctx, m, "VendorId");
         if let Some(v) = vid { s.borrow_mut().vid = v; }
@@ -203,7 +209,8 @@ pub fn run(src: &str, candidates: Vec<HidInfo>, live: bool, frames: usize) -> Re
         }
         let _ : () = m.get::<_, Function>("Initialize").map(|f| f.call(())).unwrap_or(Ok(()))?;
         for _ in 0..frames { let _ : () = m.get::<_, Function>("Render").map(|f| f.call(())).unwrap_or(Ok(()))?; }
-        let _ : () = m.get::<_, Function>("Shutdown").map(|f| f.call((false,))).unwrap_or(Ok(()))?;
+        // --hold leaves the last frame on the hardware instead of the plugin's shutdown colour.
+        if !o.hold { let _ : () = m.get::<_, Function>("Shutdown").map(|f| f.call((false,))).unwrap_or(Ok(()))?; }
         let ss = s.borrow();
         Ok(RunReport { writes: ss.writes, selected: ss.selected.clone(), frames })
     })

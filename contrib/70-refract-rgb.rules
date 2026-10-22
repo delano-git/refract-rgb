@@ -3,4 +3,5 @@
 #           sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=hidraw
 # (uaccess alone only applies to the active local seat, so use a group instead.)
 # Add vendor IDs as needed; this list covers devices tested so far.
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1462", GROUP="plugdev", MODE="0660"   # MSI (Mystic Light)
+# MSI (Mystic Light). No trailing comments on rule lines: udev rejects them.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1462", GROUP="plugdev", MODE="0660"

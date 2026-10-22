@@ -2,6 +2,10 @@
 // Everything not backed by hardware is stored or ignored for now.
 (function () {
   const n = globalThis;
+  // Solid colour stands in for the canvas until an effect engine exists.
+  const solid = () => __solid();
+  const hex = (h) => { const v = parseInt(String(h).replace("#", ""), 16) || 0; return [(v >> 16) & 255, (v >> 8) & 255, v & 255]; };
+  const fill = (n) => { const c = solid(), out = []; for (let i = 0; i < n; i++) out.push(c[0], c[1], c[2]); return out; };
   const state = { leds: [], channels: [], props: {}, name: "", size: [1, 1] };
   n.device = {
     write: (d, len) => __hidWrite(d, len ?? d.length),
@@ -20,12 +24,22 @@
     setImageFromUrl() {}, setFrameRateTarget() {}, SetLedLimit() {},
     addChannel(...a) { state.channels.push(a); },
     getChannelNames: () => state.channels.map(c => c[0]),
-    channel: () => ({ shouldPulseColors: () => false, LedCount: () => 0, ledCount: 0, getColors: () => [], getComponentNames: () => [] }),
+    channel(name) {
+      const c = state.channels.find(x => x[0] === name);
+      const n = c ? (c[1] | 0) : 0;
+      return { shouldPulseColors: () => false, LedCount: () => n, ledCount: n, getColors: () => fill(n), getComponentNames: () => [] };
+    },
     getLedCount: () => 0, getChannelPulseColor: () => [0, 0, 0],
     createSubdevice() {}, removeSubdevice() {}, setSubdeviceName() {}, setSubdeviceSize() {},
     setSubdeviceLeds() {}, setSubdeviceImageUrl() {}, setSubdeviceImage() {}, getCurrentSubdevices: () => [],
-    color: () => [0, 0, 0], subdeviceColor: () => [0, 0, 0], getBrightness: () => 100,
-    createColorArray: (len) => new Array(Math.max(0, len | 0) * 3).fill(0),
+    color: () => solid(), subdeviceColor: () => solid(), getBrightness: () => 100,
+    createColorArray(c, len) {
+      if (typeof c === "number") return new Array(Math.max(0, c | 0) * 3).fill(0);
+      const rgb = typeof c === "string" ? hex(c) : c;
+      const out = [];
+      for (let i = 0; i < (len | 0); i++) out.push(rgb[0], rgb[1], rgb[2]);
+      return out;
+    },
     addProperty(p) { state.props[p?.property ?? ""] = p; }, removeProperty() {}, getProperty: () => undefined,
     addFeature() {}, setDeviceType() {},
     fanControlDisabled: () => true, createFanControl() {}, removeFanControl() {}, setRPM() {},

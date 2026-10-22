@@ -8,7 +8,7 @@ const USAGE: &str = "refract <command>
   list                          list hidraw devices
   info <plugin.js>              print a plugin's name and USB IDs
   sweep <dir>                   dry-run every plugin under <dir>, summarise failures
-  run <plugin.js> [--live] [--frames N]
+  run <plugin.js> [--live] [--frames N] [--color #rrggbb] [--hold]
                                 drive a plugin's lifecycle. Without --live no
                                 bytes are sent to hardware (dry run).";
 
@@ -31,6 +31,11 @@ fn main() -> Result<()> {
             let path = a.get(1).context("plugin path")?;
             let live = a.iter().any(|x| x == "--live");
             let frames = a.iter().position(|x| x == "--frames").and_then(|i| a.get(i + 1)).and_then(|x| x.parse().ok()).unwrap_or(1);
+            let hold = a.iter().any(|x| x == "--hold");
+            let color = match a.iter().position(|x| x == "--color").and_then(|i| a.get(i + 1)) {
+                Some(c) => parse_color(c)?,
+                None => [0, 0, 0],
+            };
             let src = fs::read_to_string(path)?;
             let info = host::inspect(&src)?;
             // Only devices matching the plugin's USB IDs are candidates.
@@ -38,12 +43,19 @@ fn main() -> Result<()> {
                 .filter(|d| info.vendor_id == Some(d.vendor_id) && info.product_ids.contains(&d.product_id))
                 .collect();
             println!("{}: {} matching hidraw endpoint(s){}", info.name, cands.len(), if live { " [LIVE]" } else { " [dry run]" });
-            let r = host::run(&src, cands, live, frames)?;
+            let r = host::run(&src, cands, host::RunOpts { live, frames, color, hold })?;
             println!("selected={:?} writes={} frames={}", r.selected.map(|d| d.node), r.writes, r.frames);
         }
         _ => bail!("{USAGE}"),
     }
     Ok(())
+}
+
+fn parse_color(s: &str) -> Result<[u8; 3]> {
+    let h = s.trim_start_matches('#');
+    if h.len() != 6 { bail!("colour must be #rrggbb"); }
+    let v = u32::from_str_radix(h, 16).context("colour must be #rrggbb")?;
+    Ok([(v >> 16) as u8, (v >> 8) as u8, v as u8])
 }
 
 fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -69,7 +81,7 @@ fn sweep(dir: &str) -> Result<()> {
                 product_id: info.product_ids.first().copied().unwrap_or(0),
                 name: info.name, interface: 0, usage_page: 0, usage: 0,
             };
-            host::run(&src, vec![cand], false, 1).map(|_| ())
+            host::run(&src, vec![cand], host::RunOpts { live: false, frames: 1, color: [0; 3], hold: false }).map(|_| ())
         })();
         match res { Ok(()) => ok += 1, Err(e) => failed.push((f.clone(), format!("{e:#}"))) }
     }
