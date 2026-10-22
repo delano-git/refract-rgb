@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Refract RGB">
+  <title>Refract RGB</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1c1e29"/>
+      <stop offset="1" stop-color="#0f1016"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity=".04"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".95"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity=".45"/>
+    </linearGradient>
+    <linearGradient id="r" x1="0" x2="1"><stop offset="0" stop-color="#ff3b5c" stop-opacity=".95"/><stop offset="1" stop-color="#ff3b5c"/></linearGradient>
+    <linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="#2bff88" stop-opacity=".95"/><stop offset="1" stop-color="#2bff88"/></linearGradient>
+    <linearGradient id="b" x1="0" x2="1"><stop offset="0" stop-color="#3d7bff" stop-opacity=".95"/><stop offset="1" stop-color="#3d7bff"/></linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="3.2"/></filter>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+
+  <!-- incoming white beam -->
+  <path d="M18 118 L93 112" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+  <path d="M18 118 L93 112" stroke="#ffffff" stroke-width="10" stroke-linecap="round" opacity=".25" filter="url(#glow)"/>
+
+  <!-- refracted rays, glow underlay then crisp line -->
+  <g stroke-linecap="round" fill="none">
+    <path d="M167 106 L246 62"  stroke="#ff3b5c" stroke-width="12" opacity=".45" filter="url(#glow)"/>
+    <path d="M172 119 L248 128" stroke="#2bff88" stroke-width="12" opacity=".45" filter="url(#glow)"/>
+    <path d="M178 132 L246 194" stroke="#3d7bff" stroke-width="12" opacity=".45" filter="url(#glow)"/>
+    <path d="M167 106 L246 62"  stroke="url(#r)" stroke-width="5.5"/>
+    <path d="M172 119 L248 128" stroke="url(#g)" stroke-width="5.5"/>
+    <path d="M178 132 L246 194" stroke="url(#b)" stroke-width="5.5"/>
+  </g>
+
+  <!-- prism -->
+  <path d="M128 44 L62 172 L194 172 Z" fill="url(#glass)"/>
+  <path d="M93 112 L170 120" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity=".55"/>
+  <path d="M128 44 L62 172 L194 172 Z" fill="none" stroke="url(#edge)" stroke-width="4.5" stroke-linejoin="round"/>
+</svg>
