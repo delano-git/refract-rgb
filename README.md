@@ -6,3 +6,16 @@ Goal: a Linux-native RGB controller that can run SignalRGB-format
 Lightscript effects (HTML/JS canvas) and device plugins.
 
 Vendor binaries are not committed; see `.gitignore`.
+
+## Status
+
+Rust host (`src/`): QuickJS plugin runtime, hidraw access via sysfs (no libudev),
+SignalRGB `device` API and `@SignalRGB/*` module shims, Linux DMI in place of WMI.
+
+    cargo build
+    ./target/debug/refract list
+    ./target/debug/refract info <plugin.js>
+    ./target/debug/refract run <plugin.js> [--frames N]   # dry run, no hardware writes
+    ./target/debug/refract run <plugin.js> --live         # sends bytes to the device
+
+Plugins are not included; point the tool at a SignalRGB `Plugins/` directory.

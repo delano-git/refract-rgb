@@ -1,0 +1,9 @@
+[package]
+name = "refract"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+libc = "0.2.191"
+rquickjs = { version = "0.14.0", features = ["loader", "macro", "classes", "properties"] }
