@@ -7,6 +7,7 @@ use std::fs;
 const USAGE: &str = "refract <command>
   list                          list hidraw devices
   info <plugin.js>              print a plugin's name and USB IDs
+  sweep <dir>                   dry-run every plugin under <dir>, summarise failures
   run <plugin.js> [--live] [--frames N]
                                 drive a plugin's lifecycle. Without --live no
                                 bytes are sent to hardware (dry run).";
@@ -25,6 +26,7 @@ fn main() -> Result<()> {
             let i = host::inspect(&src)?;
             println!("{} vid={:?} pids={:04x?}", i.name, i.vendor_id.map(|v| format!("{v:04x}")), i.product_ids);
         }
+        Some("sweep") => sweep(a.get(1).context("plugins dir")?)?,
         Some("run") => {
             let path = a.get(1).context("plugin path")?;
             let live = a.iter().any(|x| x == "--live");
@@ -41,5 +43,44 @@ fn main() -> Result<()> {
         }
         _ => bail!("{USAGE}"),
     }
+    Ok(())
+}
+
+fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() { walk(&p, out); } else if p.extension().is_some_and(|x| x == "js") { out.push(p); }
+    }
+}
+
+/// Dry-run every plugin with a synthetic endpoint matching its first USB ID.
+fn sweep(dir: &str) -> Result<()> {
+    let mut files = Vec::new();
+    walk(std::path::Path::new(dir), &mut files);
+    files.sort();
+    let (mut ok, mut failed) = (0, Vec::new());
+    for f in &files {
+        let res = (|| -> Result<()> {
+            let src = fs::read_to_string(f)?;
+            let info = host::inspect(&src)?;
+            let cand = hid::HidInfo {
+                node: String::new(), vendor_id: info.vendor_id.unwrap_or(0),
+                product_id: info.product_ids.first().copied().unwrap_or(0),
+                name: info.name, interface: 0, usage_page: 0, usage: 0,
+            };
+            host::run(&src, vec![cand], false, 1).map(|_| ())
+        })();
+        match res { Ok(()) => ok += 1, Err(e) => failed.push((f.clone(), format!("{e:#}"))) }
+    }
+    println!("{} plugins: {} ok, {} failed", files.len(), ok, failed.len());
+    let mut groups: std::collections::BTreeMap<String, usize> = Default::default();
+    for (_, e) in &failed {
+        let k: String = e.lines().next().unwrap_or("").chars().take(90).collect();
+        *groups.entry(k).or_default() += 1;
+    }
+    let mut g: Vec<_> = groups.into_iter().collect();
+    g.sort_by(|a, b| b.1.cmp(&a.1));
+    for (k, n) in g.iter().take(25) { println!("{n:4}  {k}"); }
     Ok(())
 }

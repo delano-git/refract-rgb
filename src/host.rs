@@ -56,6 +56,14 @@ fn bytes(v: Value<'_>, len: usize) -> Vec<u8> {
     out
 }
 
+fn trace(kind: &str, buf: &[u8]) {
+    if std::env::var_os("REFRACT_TRACE").is_some() {
+        let n = buf.len().min(24);
+        let hex: Vec<String> = buf[..n].iter().map(|b| format!("{b:02x}")).collect();
+        eprintln!("[trace] {kind} len={} {}{}", buf.len(), hex.join(" "), if buf.len() > n { " .." } else { "" });
+    }
+}
+
 fn install(ctx: &Ctx<'_>, s: &Shared) -> rquickjs::Result<()> {
     let g = ctx.globals();
     let c = s.clone();
@@ -63,6 +71,7 @@ fn install(ctx: &Ctx<'_>, s: &Shared) -> rquickjs::Result<()> {
         let buf = bytes(d, len);
         let mut s = c.borrow_mut();
         s.writes += 1;
+        trace("write", &buf);
         if s.live { if let Some(dev) = s.dev.as_mut() { return dev.write(&buf).map(|n| n as i32).unwrap_or(-1); } }
         buf.len() as i32
     }))?;
@@ -71,6 +80,7 @@ fn install(ctx: &Ctx<'_>, s: &Shared) -> rquickjs::Result<()> {
         let buf = bytes(d, len);
         let mut s = c.borrow_mut();
         s.writes += 1;
+        trace("send_report", &buf);
         if s.live { if let Some(dev) = s.dev.as_mut() { return dev.send_feature(&buf).map(|n| n as i32).unwrap_or(-1); } }
         buf.len() as i32
     }))?;
@@ -114,7 +124,11 @@ fn install(ctx: &Ctx<'_>, s: &Shared) -> rquickjs::Result<()> {
     g.set("__hidProductId", Function::new(ctx.clone(), move || c.borrow().pid as i32))?;
     let c = s.clone();
     g.set("__hidVendorId", Function::new(ctx.clone(), move || c.borrow().vid as i32))?;
-    g.set("__sleep", Function::new(ctx.clone(), |ms: u64| std::thread::sleep(std::time::Duration::from_millis(ms.min(2000)))))?;
+    // Dry runs skip delays so sweeps stay fast.
+    let c = s.clone();
+    g.set("__sleep", Function::new(ctx.clone(), move |ms: u64| {
+        if c.borrow().live { std::thread::sleep(std::time::Duration::from_millis(ms.min(2000))); }
+    }))?;
     let c = s.clone();
     g.set("__log", Function::new(ctx.clone(), move |m: String| { eprintln!("[plugin] {m}"); c.borrow_mut().log.push(m); }))?;
     Ok(())
@@ -207,6 +221,8 @@ fn with_plugin<R>(src: &str, s: &Shared, f: impl for<'js> FnOnce(&Ctx<'js>, &Mod
     let rt = Runtime::new()?;
     rt.set_loader(Shims::load(), Shims::load());
     rt.set_memory_limit(256 * 1024 * 1024);
+    let start = std::time::Instant::now();
+    rt.set_interrupt_handler(Some(Box::new(move || start.elapsed() > std::time::Duration::from_secs(5))));
     let ctx = Context::full(&rt)?;
     ctx.with(|ctx| {
         let r = (|| -> Result<R> {
