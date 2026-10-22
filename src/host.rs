@@ -1,4 +1,5 @@
 //! QuickJS plugin host: exposes SignalRGB's `device` API and drives a plugin's lifecycle.
+use crate::fx::Fx;
 use crate::hid::{HidDevice, HidInfo};
 use anyhow::{Result, anyhow};
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
@@ -6,6 +7,9 @@ use rquickjs::{Context, Ctx, Function, Module, Runtime, Value, module::{Declared
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 const PRELUDE: &str = include_str!("js/prelude.js");
 const MODULES: &str = include_str!("js/modules.js");
@@ -20,10 +24,19 @@ pub struct Session {
     pub vid: u16,
     pub pid: u16,
     pub writes: usize,
-    pub color: [u8; 3],
+    pub fx: Arc<Fx>,
+    /// Consecutive failed hardware writes; a device that vanished (resume, unplug) trips this.
+    pub failed: usize,
+    /// Last time the plugin made progress (ms since process epoch); the watchdog interrupts scripts that stall.
+    pub alive: Arc<AtomicU64>,
     pub log: Vec<String>,
 }
 type Shared = Rc<RefCell<Session>>;
+
+fn now_ms() -> u64 {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
 
 struct Shims(HashMap<String, String>);
 impl Shims {
@@ -73,7 +86,11 @@ fn install(ctx: &Ctx<'_>, s: &Shared) -> rquickjs::Result<()> {
         let mut s = c.borrow_mut();
         s.writes += 1;
         trace("write", &buf);
-        if s.live { if let Some(dev) = s.dev.as_mut() { return dev.write(&buf).map(|n| n as i32).unwrap_or(-1); } }
+        if s.live { if let Some(dev) = s.dev.as_mut() {
+            let r = dev.write(&buf).map(|n| n as i32).unwrap_or(-1);
+            s.failed = if r < 0 { s.failed + 1 } else { 0 };
+            return r;
+        } }
         buf.len() as i32
     }))?;
     let c = s.clone();
@@ -82,7 +99,11 @@ fn install(ctx: &Ctx<'_>, s: &Shared) -> rquickjs::Result<()> {
         let mut s = c.borrow_mut();
         s.writes += 1;
         trace("send_report", &buf);
-        if s.live { if let Some(dev) = s.dev.as_mut() { return dev.send_feature(&buf).map(|n| n as i32).unwrap_or(-1); } }
+        if s.live { if let Some(dev) = s.dev.as_mut() {
+            let r = dev.send_feature(&buf).map(|n| n as i32).unwrap_or(-1);
+            s.failed = if r < 0 { s.failed + 1 } else { 0 };
+            return r;
+        } }
         buf.len() as i32
     }))?;
     let c = s.clone();
@@ -122,7 +143,10 @@ fn install(ctx: &Ctx<'_>, s: &Shared) -> rquickjs::Result<()> {
         std::fs::read_to_string(format!("/sys/class/dmi/id/{k}")).ok().map(|v| v.trim().to_string())
     }))?;
     let c = s.clone();
-    g.set("__solid", Function::new(ctx.clone(), move || -> Vec<i32> { c.borrow().color.iter().map(|&v| v as i32).collect() }))?;
+    g.set("__fx", Function::new(ctx.clone(), move |u: f64, v: f64| -> Vec<i32> {
+        let fx = c.borrow().fx.clone();
+        fx.color(u, v).iter().map(|&x| x as i32).collect()
+    }))?;
     let c = s.clone();
     g.set("__hidProductId", Function::new(ctx.clone(), move || c.borrow().pid as i32))?;
     let c = s.clone();
@@ -165,11 +189,14 @@ pub fn inspect(src: &str) -> Result<PluginInfo> {
 pub struct RunReport { pub writes: usize, pub selected: Option<HidInfo>, pub frames: usize }
 
 /// Drive Validate -> Initialize -> Render x frames -> Shutdown against `candidates`.
-pub struct RunOpts { pub live: bool, pub frames: usize, pub color: [u8; 3], pub hold: bool }
+/// How long to keep rendering.
+pub enum Until { Frames(usize), Stop { stop: Arc<AtomicBool>, fps: u32 } }
+
+pub struct RunOpts { pub live: bool, pub fx: Arc<Fx>, pub until: Until, pub hold: bool }
 
 pub fn run(src: &str, candidates: Vec<HidInfo>, o: RunOpts) -> Result<RunReport> {
-    let (live, frames) = (o.live, o.frames);
-    let s: Shared = Rc::new(RefCell::new(Session { live, color: o.color, candidates: candidates.clone(), ..Default::default() }));
+    let live = o.live;
+    let s: Shared = Rc::new(RefCell::new(Session { live, fx: o.fx.clone(), candidates: candidates.clone(), ..Default::default() }));
     with_plugin(src, &s, |ctx, m| {
         let vid: Option<u16> = call_opt(ctx, m, "VendorId");
         if let Some(v) = vid { s.borrow_mut().vid = v; }
@@ -208,7 +235,30 @@ pub fn run(src: &str, candidates: Vec<HidInfo>, o: RunOpts) -> Result<RunReport>
             }
         }
         let _ : () = m.get::<_, Function>("Initialize").map(|f| f.call(())).unwrap_or(Ok(()))?;
-        for _ in 0..frames { let _ : () = m.get::<_, Function>("Render").map(|f| f.call(())).unwrap_or(Ok(()))?; }
+        let render = || -> Result<()> { m.get::<_, Function>("Render").map(|f| f.call(())).unwrap_or(Ok(())).map_err(Into::into) };
+        let mut frames = 0;
+        match &o.until {
+            Until::Frames(n) => for _ in 0..*n { render()?; frames += 1; },
+            Until::Stop { stop, fps } => {
+                if s.borrow().selected.is_none() { return Err(anyhow!("no endpoint accepted")); }
+                let period = Duration::from_secs_f64(1.0 / (*fps).max(1) as f64);
+                let mut last = Instant::now();
+                while !stop.load(Ordering::Relaxed) {
+                    let t0 = Instant::now();
+                    s.borrow().alive.store(now_ms(), Ordering::Relaxed);
+                    // A long gap means the machine slept; hardware often forgets its mode, so start over.
+                    if t0.duration_since(last) > Duration::from_secs(5) {
+                        let _ : () = m.get::<_, Function>("Initialize").map(|f| f.call(())).unwrap_or(Ok(()))?;
+                    }
+                    last = t0;
+                    render()?;
+                    frames += 1;
+                    if frames == 3 && s.borrow().writes == 0 { return Err(anyhow!("no endpoint accepted (plugin wrote nothing)")); }
+                    if s.borrow().failed > 20 { return Err(anyhow!("device stopped accepting writes")); }
+                    if let Some(rest) = period.checked_sub(t0.elapsed()) { std::thread::sleep(rest); }
+                }
+            }
+        }
         // --hold leaves the last frame on the hardware instead of the plugin's shutdown colour.
         if !o.hold { let _ : () = m.get::<_, Function>("Shutdown").map(|f| f.call((false,))).unwrap_or(Ok(()))?; }
         let ss = s.borrow();
@@ -228,8 +278,9 @@ fn with_plugin<R>(src: &str, s: &Shared, f: impl for<'js> FnOnce(&Ctx<'js>, &Mod
     let rt = Runtime::new()?;
     rt.set_loader(Shims::load(), Shims::load());
     rt.set_memory_limit(256 * 1024 * 1024);
-    let start = std::time::Instant::now();
-    rt.set_interrupt_handler(Some(Box::new(move || start.elapsed() > std::time::Duration::from_secs(5))));
+    let alive = s.borrow().alive.clone();
+    alive.store(now_ms(), Ordering::Relaxed);
+    rt.set_interrupt_handler(Some(Box::new(move || now_ms().saturating_sub(alive.load(Ordering::Relaxed)) > 5000)));
     let ctx = Context::full(&rt)?;
     ctx.with(|ctx| {
         let r = (|| -> Result<R> {

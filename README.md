@@ -28,3 +28,18 @@ Runs every plugin whose VID/PID matches a connected device, plus ENE DDR5 RAM
 over SMBus. Plugin dir: `--plugins`, `$REFRACT_PLUGINS`, or the extracted tree.
 Setup: `sudo cp contrib/70-refract-rgb.rules /etc/udev/rules.d/`, reload udev,
 and be in `plugdev`. DRAM writes are volatile and never touch SPD space.
+
+## The app
+
+    cargo build --release && cp target/release/refract ~/.local/bin/
+    refract install-service      # starts at login via a systemd user unit
+    refract daemon [--plugins DIR]
+
+One process runs the effects engine (one thread per device, restarted if a
+device vanishes or the machine resumes from sleep), a tray icon, and a web UI
+at http://127.0.0.1:7878/. Settings persist in `~/.config/refract-rgb/config.json`.
+Effects: solid, breathing, rainbow wave, colour cycle, gradient wave.
+
+The web API accepts writes only from loopback, with a matching `Host` header
+and an `X-Refract` header, so other web pages cannot drive the lights.
+The tray needs a StatusNotifier host (Ubuntu's AppIndicator extension).

@@ -1,6 +1,11 @@
 mod hid;
+mod daemon;
 mod ene;
+mod engine;
+mod fx;
 mod i2c;
+mod tray;
+mod web;
 mod host;
 
 use anyhow::{Context, Result, bail};
@@ -16,6 +21,8 @@ const USAGE: &str = "refract <command>
                                 solid colour on an ENE V2 DRAM controller (volatile, never saved)
   apply <#rrggbb> [--plugins DIR] [--dry-run]
                                 set one colour on every supported device found (USB plugins + DRAM)
+  daemon [--plugins DIR]        run the app: effects engine, tray icon, web UI on 127.0.0.1:7878
+  install-service               autostart the daemon at login (systemd user unit)
   sweep <dir>                   dry-run every plugin under <dir>, summarise failures
   run <plugin.js> [--live] [--frames N] [--color #rrggbb] [--hold]
                                 drive a plugin's lifecycle. Without --live no
@@ -55,6 +62,8 @@ fn main() -> Result<()> {
             let leds = ene::set_color(n, addr, parse_color(a.get(3).context("colour")?)?)?;
             println!("{addr:#04x}: {leds} LEDs");
         }
+        Some("daemon") => daemon::run(a.iter().position(|x| x == "--plugins").and_then(|i| a.get(i + 1)).map(Into::into))?,
+        Some("install-service") => install_service()?,
         Some("apply") => apply(&a[1..])?,
         Some("sweep") => sweep(a.get(1).context("plugins dir")?)?,
         Some("run") => {
@@ -73,12 +82,16 @@ fn main() -> Result<()> {
                 .filter(|d| info.vendor_id == Some(d.vendor_id) && info.product_ids.contains(&d.product_id))
                 .collect();
             println!("{}: {} matching hidraw endpoint(s){}", info.name, cands.len(), if live { " [LIVE]" } else { " [dry run]" });
-            let r = host::run(&src, cands, host::RunOpts { live, frames, color, hold })?;
+            let r = host::run(&src, cands, host::RunOpts { live, fx: solid(color), until: host::Until::Frames(frames), hold })?;
             println!("selected={:?} writes={} frames={}", r.selected.map(|d| d.node), r.writes, r.frames);
         }
         _ => bail!("{USAGE}"),
     }
     Ok(())
+}
+
+fn solid(color: [u8; 3]) -> std::sync::Arc<fx::Fx> {
+    std::sync::Arc::new(fx::Fx::new(fx::Params { effect: fx::Effect::Solid, color, ..Default::default() }))
 }
 
 fn parse_color(s: &str) -> Result<[u8; 3]> {
@@ -111,7 +124,7 @@ fn sweep(dir: &str) -> Result<()> {
                 product_id: info.product_ids.first().copied().unwrap_or(0),
                 name: info.name, interface: 0, usage_page: 0, usage: 0,
             };
-            host::run(&src, vec![cand], host::RunOpts { live: false, frames: 1, color: [0; 3], hold: false }).map(|_| ())
+            host::run(&src, vec![cand], host::RunOpts { live: false, fx: solid([0; 3]), until: host::Until::Frames(1), hold: false }).map(|_| ())
         })();
         match res { Ok(()) => ok += 1, Err(e) => failed.push((f.clone(), format!("{e:#}"))) }
     }
@@ -152,7 +165,7 @@ fn apply(a: &[String]) -> Result<()> {
             .filter(|d| info.vendor_id == Some(d.vendor_id) && info.product_ids.contains(&d.product_id) && !claimed.contains(&d.node))
             .cloned().collect();
         if cands.is_empty() { continue; }
-        let opts = host::RunOpts { live, frames: 3, color, hold: true };
+        let opts = host::RunOpts { live, fx: solid(color), until: host::Until::Frames(3), hold: true };
         match host::run(&src, cands.clone(), opts) {
             Ok(r) if r.writes > 0 && r.selected.is_some() => {
                 let node = r.selected.map(|d| d.node).unwrap_or_default();
@@ -172,5 +185,26 @@ fn apply(a: &[String]) -> Result<()> {
             Err(e) => println!("FAIL  ENE DRAM i2c-{bus} {addr:#04x} {e:#}"),
         }
     }
+    Ok(())
+}
+
+/// Install and start a systemd user unit that runs `refract daemon` at login.
+fn install_service() -> Result<()> {
+    let exe = std::env::current_exe()?;
+    let dir = std::path::PathBuf::from(std::env::var("HOME")?).join(".config/systemd/user");
+    fs::create_dir_all(&dir)?;
+    // The config stores the plugin dir after first run, but seed it from the current tree so the unit works unattended.
+    let plugins = plugins_dir(&[]).and_then(|p| fs::canonicalize(p).ok())
+        .map(|p| format!(" --plugins {}", p.display().to_string().replace(' ', "\\x20"))).unwrap_or_default();
+    let unit = format!(
+        "[Unit]\nDescription=Refract RGB lighting\nPartOf=graphical-session.target\nAfter=graphical-session.target\n\n\
+         [Service]\nExecStart={} daemon{plugins}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=graphical-session.target\n",
+        exe.display().to_string().replace(' ', "\\x20"));
+    fs::write(dir.join("refract-rgb.service"), unit)?;
+    for args in [&["daemon-reload"][..], &["enable", "--now", "refract-rgb.service"]] {
+        let st = std::process::Command::new("systemctl").arg("--user").args(args).status()?;
+        if !st.success() { bail!("systemctl --user {} failed", args.join(" ")); }
+    }
+    println!("installed and started; manage with: systemctl --user status refract-rgb");
     Ok(())
 }

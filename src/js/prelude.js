@@ -2,11 +2,12 @@
 // Everything not backed by hardware is stored or ignored for now.
 (function () {
   const n = globalThis;
-  // Solid colour stands in for the canvas until an effect engine exists.
-  const solid = () => __solid();
+  // Effects are evaluated natively; plugins sample them by normalised position, as they would a canvas.
+  const nrm = (x, size) => (size > 1 ? Math.min(1, Math.max(0, x / (size - 1))) : 0.5);
+  const sample = (u, v) => __fx(u, v);
   const hex = (h) => { const v = parseInt(String(h).replace("#", ""), 16) || 0; return [(v >> 16) & 255, (v >> 8) & 255, v & 255]; };
-  const fill = (n) => { const c = solid(), out = []; for (let i = 0; i < n; i++) out.push(c[0], c[1], c[2]); return out; };
-  const state = { leds: [], channels: [], props: {}, name: "", size: [1, 1] };
+  const fill = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(...sample(n > 1 ? i / (n - 1) : 0.5, 0.5)); return out; };
+  const state = { leds: [], channels: [], props: {}, name: "", size: [1, 1], sub: {} };
   n.device = {
     write: (d, len) => __hidWrite(d, len ?? d.length),
     send_report: (d, len) => __hidSendReport(d, len ?? d.length),
@@ -30,9 +31,10 @@
       return { shouldPulseColors: () => false, LedCount: () => n, ledCount: n, getColors: () => fill(n), getComponentNames: () => [] };
     },
     getLedCount: () => 0, getChannelPulseColor: () => [0, 0, 0],
-    createSubdevice() {}, removeSubdevice() {}, setSubdeviceName() {}, setSubdeviceSize() {},
+    createSubdevice() {}, removeSubdevice() {}, setSubdeviceName() {}, setSubdeviceSize(name, w, h) { state.sub[name] = [w, h]; },
     setSubdeviceLeds() {}, setSubdeviceImageUrl() {}, setSubdeviceImage() {}, getCurrentSubdevices: () => [],
-    color: () => solid(), subdeviceColor: () => solid(), getBrightness: () => 100,
+    color: (x, y) => sample(nrm(x, state.size[0]), nrm(y, state.size[1])),
+    subdeviceColor: (name, x, y) => { const sz = state.sub[name] ?? [1, 1]; return sample(nrm(x, sz[0]), nrm(y, sz[1])); }, getBrightness: () => 100,
     createColorArray(c, len) {
       if (typeof c === "number") return new Array(Math.max(0, c | 0) * 3).fill(0);
       const rgb = typeof c === "string" ? hex(c) : c;
