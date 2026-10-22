@@ -1,4 +1,5 @@
 mod hid;
+mod i2c;
 mod host;
 
 use anyhow::{Context, Result, bail};
@@ -7,6 +8,11 @@ use std::fs;
 const USAGE: &str = "refract <command>
   list                          list hidraw devices
   info <plugin.js>              print a plugin's name and USB IDs
+  i2c                           list SMBus adapters
+  i2c-scan <bus>                passive scan of one adapter (receive-byte only, skips 0x50-0x57)
+  ene-id <bus> <addr>           read an ENE RGB controller's firmware string (0x70-0x77 only)
+  ene-color <bus> <addr> <#rrggbb>
+                                solid colour on an ENE V2 DRAM controller (volatile, never saved)
   sweep <dir>                   dry-run every plugin under <dir>, summarise failures
   run <plugin.js> [--live] [--frames N] [--color #rrggbb] [--hold]
                                 drive a plugin's lifecycle. Without --live no
@@ -25,6 +31,37 @@ fn main() -> Result<()> {
             let src = fs::read_to_string(a.get(1).context("plugin path")?)?;
             let i = host::inspect(&src)?;
             println!("{} vid={:?} pids={:04x?}", i.name, i.vendor_id.map(|v| format!("{v:04x}")), i.product_ids);
+        }
+        Some("i2c") => for ad in i2c::adapters() { println!("i2c-{:<3} {}", ad.num, ad.name); },
+        Some("i2c-scan") => {
+            let n: u32 = a.get(1).context("bus number")?.parse()?;
+            for (addr, what) in i2c::scan(n)? { println!("{addr:#04x}  {what}"); }
+        }
+        Some("ene-id") => {
+            let n: u32 = a.get(1).context("bus number")?.parse()?;
+            let addr = u16::from_str_radix(a.get(2).context("address")?.trim_start_matches("0x"), 16)?;
+            if !(0x70..=0x77).contains(&addr) { bail!("ene-id only probes 0x70-0x77"); }
+            let mut bus = i2c::Bus::open(n, true)?;
+            bus.set_addr(addr)?;
+            let id: Vec<u8> = (0..16u16).map(|i| bus.ene_read(0x1000 + i)).collect::<Result<_>>()?;
+            println!("{addr:#04x}: {:?}  raw={id:02x?}", String::from_utf8_lossy(&id).trim_end_matches('\0'));
+        }
+        Some("ene-color") => {
+            let n: u32 = a.get(1).context("bus number")?.parse()?;
+            let addr = u16::from_str_radix(a.get(2).context("address")?.trim_start_matches("0x"), 16)?;
+            if !(0x70..=0x77).contains(&addr) { bail!("ene-color only drives 0x70-0x77"); }
+            let [r, g, b] = parse_color(a.get(3).context("colour")?)?;
+            let mut bus = i2c::Bus::open(n, true)?;
+            bus.set_addr(addr)?;
+            let id: Vec<u8> = (0..16u16).map(|i| bus.ene_read(0x1000 + i)).collect::<Result<_>>()?;
+            if !id.starts_with(b"AUDA0-E6K5-0101") { bail!("unrecognised firmware {:?}; refusing to write", String::from_utf8_lossy(&id)); }
+            let leds = bus.ene_read(0x1c02)?.max(bus.ene_read(0x1c03)?) as usize;
+            if leds == 0 || leds > 15 { bail!("implausible LED count {leds}"); }
+            println!("{addr:#04x}: {leds} LEDs");
+            bus.ene_write(0x8020, 1)?;                       // direct mode
+            let data: Vec<u8> = (0..leds).flat_map(|_| [r, b, g]).collect(); // ENE wants R,B,G
+            for (i, chunk) in data.chunks(15).enumerate() { bus.ene_write_block(0x8100 + (i * 15) as u16, chunk)?; }
+            bus.ene_write(0x802f, 1)?;                       // apply (no flash save)
         }
         Some("sweep") => sweep(a.get(1).context("plugins dir")?)?,
         Some("run") => {
