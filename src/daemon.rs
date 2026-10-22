@@ -4,6 +4,7 @@ use crate::fx::{Fx, Params};
 use crate::{tray, web};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +14,7 @@ pub const PORT: u16 = 7878;
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Config { pub params: Params, pub plugins_dir: Option<String> }
+pub struct Config { pub params: Params, pub overrides: BTreeMap<String, Params>, pub plugins_dir: Option<String> }
 
 pub fn config_path() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
@@ -29,22 +30,31 @@ fn load() -> Config {
 pub struct App { pub fx: Arc<Fx>, pub engine: Arc<Engine>, dirty: AtomicBool, plugins_dir: Option<String> }
 
 impl App {
-    /// Change settings from any control surface; they are saved shortly after.
-    pub fn update(&self, f: impl FnOnce(&mut Params)) {
-        self.fx.set(f);
+    /// Change settings for a target ("" = everything, `device`, or `device/zone`); saved shortly after.
+    pub fn update(&self, target: &str, f: impl FnOnce(&mut Params)) {
+        self.fx.edit(target, f);
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Make a target follow its parent again.
+    pub fn reset(&self, target: &str) {
+        self.fx.reset(target);
         self.dirty.store(true, Ordering::Relaxed);
     }
 
     fn save(&self) -> Result<()> {
         let path = config_path();
         std::fs::create_dir_all(path.parent().unwrap())?;
-        let cfg = Config { params: self.fx.params(), plugins_dir: self.plugins_dir.clone() };
+        let cfg = Config { params: self.fx.params(), overrides: self.fx.overrides(), plugins_dir: self.plugins_dir.clone() };
         // Write-then-rename so a crash never leaves a half-written file.
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&cfg)?)?;
         std::fs::rename(&tmp, &path)?;
         Ok(())
     }
+
+    /// SignalRGB HTML effects available to show; filled in once the canvas host exists.
+    pub fn canvas_effects(&self) -> Vec<serde_json::Value> { Vec::new() }
 
     pub fn quit(&self) -> ! {
         let _ = self.save();
@@ -60,7 +70,7 @@ pub fn run(plugins_override: Option<PathBuf>) -> Result<()> {
         .or_else(|| Some("extracted/stage3/lib/net45/Signal-x64/Plugins".to_string()).filter(|p| std::path::Path::new(p).is_dir()));
     // Services start in an arbitrary directory, so store an absolute path.
     let plugins_dir = plugins_dir.map(|p| std::fs::canonicalize(&p).map(|c| c.display().to_string()).unwrap_or(p));
-    let fx = Arc::new(Fx::new(cfg.params));
+    let fx = Arc::new(Fx::new(cfg.params, cfg.overrides));
     let engine = Engine::start(fx.clone(), plugins_dir.clone().map(PathBuf::from));
     let app = Arc::new(App { fx, engine, dirty: AtomicBool::new(plugins_dir != cfg.plugins_dir), plugins_dir });
     if app.plugins_dir.is_none() { eprintln!("warning: no plugin directory; USB devices disabled (use --plugins DIR)"); }

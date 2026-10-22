@@ -82,7 +82,7 @@ fn main() -> Result<()> {
                 .filter(|d| info.vendor_id == Some(d.vendor_id) && info.product_ids.contains(&d.product_id))
                 .collect();
             println!("{}: {} matching hidraw endpoint(s){}", info.name, cands.len(), if live { " [LIVE]" } else { " [dry run]" });
-            let r = host::run(&src, cands, host::RunOpts { live, fx: solid(color), until: host::Until::Frames(frames), hold })?;
+            let r = host::run(&src, cands, host::RunOpts::once(live, solid(color), frames, hold))?;
             println!("selected={:?} writes={} frames={}", r.selected.map(|d| d.node), r.writes, r.frames);
         }
         _ => bail!("{USAGE}"),
@@ -91,7 +91,7 @@ fn main() -> Result<()> {
 }
 
 fn solid(color: [u8; 3]) -> std::sync::Arc<fx::Fx> {
-    std::sync::Arc::new(fx::Fx::new(fx::Params { effect: fx::Effect::Solid, color, ..Default::default() }))
+    std::sync::Arc::new(fx::Fx::new(fx::Params { effect: "solid".into(), color, ..Default::default() }, Default::default()))
 }
 
 fn parse_color(s: &str) -> Result<[u8; 3]> {
@@ -124,7 +124,7 @@ fn sweep(dir: &str) -> Result<()> {
                 product_id: info.product_ids.first().copied().unwrap_or(0),
                 name: info.name, interface: 0, usage_page: 0, usage: 0,
             };
-            host::run(&src, vec![cand], host::RunOpts { live: false, fx: solid([0; 3]), until: host::Until::Frames(1), hold: false }).map(|_| ())
+            host::run(&src, vec![cand], host::RunOpts::once(false, solid([0; 3]), 1, false)).map(|_| ())
         })();
         match res { Ok(()) => ok += 1, Err(e) => failed.push((f.clone(), format!("{e:#}"))) }
     }
@@ -165,7 +165,7 @@ fn apply(a: &[String]) -> Result<()> {
             .filter(|d| info.vendor_id == Some(d.vendor_id) && info.product_ids.contains(&d.product_id) && !claimed.contains(&d.node))
             .cloned().collect();
         if cands.is_empty() { continue; }
-        let opts = host::RunOpts { live, fx: solid(color), until: host::Until::Frames(3), hold: true };
+        let opts = host::RunOpts::once(live, solid(color), 3, true);
         match host::run(&src, cands.clone(), opts) {
             Ok(r) if r.writes > 0 && r.selected.is_some() => {
                 let node = r.selected.map(|d| d.node).unwrap_or_default();

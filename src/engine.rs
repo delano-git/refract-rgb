@@ -2,7 +2,6 @@
 use crate::fx::Fx;
 use crate::{ene, hid, host};
 use anyhow::{Result, anyhow};
-use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,8 +12,8 @@ use std::time::{Duration, Instant};
 const USB_FPS: u32 = 30;
 const DRAM_FPS: u32 = 15;
 
-#[derive(Clone, Serialize)]
-pub struct Status { pub name: String, pub kind: &'static str, pub state: String, pub detail: String }
+#[derive(Clone)]
+pub struct Status { pub name: String, pub kind: &'static str, pub state: String, pub detail: String, pub zones: Arc<Mutex<Vec<String>>> }
 
 pub struct Engine {
     pub fx: Arc<Fx>,
@@ -22,7 +21,7 @@ pub struct Engine {
     stop: Arc<AtomicBool>,
 }
 
-struct Job { handle: JoinHandle<Result<()>>, nodes: Vec<String>, name: String, kind: &'static str }
+struct Job { handle: JoinHandle<Result<()>>, nodes: Vec<String>, name: String, kind: &'static str, devkey: String, zones: Arc<Mutex<Vec<String>>> }
 
 struct Plugin { path: String, src: Arc<String>, info: host::PluginInfo }
 
@@ -47,8 +46,8 @@ impl Engine {
         }
     }
 
-    fn set(&self, key: &str, name: &str, kind: &'static str, state: &str, detail: &str) {
-        self.status.lock().unwrap().insert(key.into(), Status { name: name.into(), kind, state: state.into(), detail: detail.into() });
+    fn set(&self, key: &str, name: &str, kind: &'static str, state: &str, detail: &str, zones: &Arc<Mutex<Vec<String>>>) {
+        self.status.lock().unwrap().insert(key.into(), Status { name: name.into(), kind, state: state.into(), detail: detail.into(), zones: zones.clone() });
     }
 
     fn index(dir: &Path) -> Vec<Plugin> {
@@ -82,7 +81,7 @@ impl Engine {
                 if self.stop.load(Ordering::Relaxed) { break; }
                 let msg = res.err().map(|e| format!("{e:#}").lines().next().unwrap_or("").to_string()).unwrap_or_default();
                 let wait = if msg.contains("no endpoint") { 120 } else { 10 };
-                self.set(&k, &j.name, j.kind, if msg.contains("no endpoint") { "unsupported" } else { "error" }, &msg);
+                self.set(&j.devkey, &j.name, j.kind, if msg.contains("no endpoint") { "unsupported" } else { "error" }, &msg, &j.zones);
                 retry.insert(k, Instant::now() + Duration::from_secs(wait));
             }
 
@@ -102,22 +101,28 @@ impl Engine {
                 let (fx, stop, src) = (self.fx.clone(), self.stop.clone(), p.src.clone());
                 let nodes = cands.iter().map(|d| d.node.clone()).collect();
                 let c2 = cands.clone();
+                let devkey = format!("usb:{}", p.info.name);
+                let zones: Arc<Mutex<Vec<String>>> = Default::default();
+                let (dk, zs) = (devkey.clone(), zones.clone());
                 let handle = std::thread::spawn(move || {
-                    let o = host::RunOpts { live: true, fx, until: host::Until::Stop { stop, fps: USB_FPS }, hold: true };
+                    let o = host::RunOpts { live: true, fx, until: host::Until::Stop { stop, fps: USB_FPS }, hold: true, dev: dk, zones: zs };
                     host::run(&src, c2, o).map(|_| ())
                 });
-                self.set(&key, &p.info.name, "usb", "running", &cands[0].node);
-                spawn.push((key, Job { handle, nodes, name: p.info.name.clone(), kind: "usb" }));
+                self.set(&devkey, &p.info.name, "usb", "running", &cands[0].node, &zones);
+                spawn.push((key, Job { handle, nodes, name: p.info.name.clone(), kind: "usb", devkey, zones }));
             }
 
             for (bus, addr) in ene::find_dram() {
                 let key = format!("dram:{bus}:{addr:x}");
                 if jobs.contains_key(&key) || retry.get(&key).is_some_and(|t| *t > Instant::now()) { continue; }
                 let (fx, stop) = (self.fx.clone(), self.stop.clone());
-                let handle = std::thread::spawn(move || dram_loop(bus, addr, fx, stop));
-                let name = format!("DDR5 RGB ({addr:#04x})");
-                self.set(&key, &name, "dram", "running", &format!("i2c-{bus}"));
-                spawn.push((key, Job { handle, nodes: vec![], name, kind: "dram" }));
+                let devkey = format!("dram:{addr:#04x}");
+                let dk = devkey.clone();
+                let handle = std::thread::spawn(move || dram_loop(bus, addr, dk, fx, stop));
+                let name = format!("DDR5 memory stick ({addr:#04x})");
+                let zones: Arc<Mutex<Vec<String>>> = Default::default();
+                self.set(&devkey, &name, "dram", "running", &format!("i2c-{bus}"), &zones);
+                spawn.push((key, Job { handle, nodes: vec![], name, kind: "dram", devkey, zones }));
             }
             jobs.extend(spawn);
 
@@ -127,7 +132,7 @@ impl Engine {
     }
 }
 
-fn dram_loop(bus: u32, addr: u16, fx: Arc<Fx>, stop: Arc<AtomicBool>) -> Result<()> {
+fn dram_loop(bus: u32, addr: u16, devkey: String, fx: Arc<Fx>, stop: Arc<AtomicBool>) -> Result<()> {
     let mut d = ene::Dram::open(bus, addr)?;
     let period = Duration::from_secs_f64(1.0 / DRAM_FPS as f64);
     let (mut fails, mut last) = (0, Instant::now());
@@ -136,7 +141,7 @@ fn dram_loop(bus: u32, addr: u16, fx: Arc<Fx>, stop: Arc<AtomicBool>) -> Result<
         if t0.duration_since(last) > Duration::from_secs(5) { d = ene::Dram::open(bus, addr)?; }
         last = t0;
         let n = d.leds;
-        let colors: Vec<[u8; 3]> = (0..n).map(|i| fx.color(if n > 1 { i as f64 / (n - 1) as f64 } else { 0.5 }, 0.5)).collect();
+        let colors: Vec<[u8; 3]> = (0..n).map(|i| fx.color(&devkey, "", if n > 1 { i as f64 / (n - 1) as f64 } else { 0.5 }, 0.5)).collect();
         match d.frame(&colors) { Ok(()) => fails = 0, Err(e) => { fails += 1; if fails > 10 { return Err(e); } } }
         if let Some(rest) = period.checked_sub(t0.elapsed()) { std::thread::sleep(rest); }
     }

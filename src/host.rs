@@ -7,7 +7,7 @@ use rquickjs::{Context, Ctx, Function, Module, Runtime, Value, module::{Declared
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,9 @@ pub struct Session {
     pub pid: u16,
     pub writes: usize,
     pub fx: Arc<Fx>,
+    /// Which device this is, and where it reports the zones (subdevices/channels) it creates.
+    pub devkey: String,
+    pub zones: Arc<Mutex<Vec<String>>>,
     /// Consecutive failed hardware writes; a device that vanished (resume, unplug) trips this.
     pub failed: usize,
     /// Last time the plugin made progress (ms since process epoch); the watchdog interrupts scripts that stall.
@@ -143,9 +146,15 @@ fn install(ctx: &Ctx<'_>, s: &Shared) -> rquickjs::Result<()> {
         std::fs::read_to_string(format!("/sys/class/dmi/id/{k}")).ok().map(|v| v.trim().to_string())
     }))?;
     let c = s.clone();
-    g.set("__fx", Function::new(ctx.clone(), move |u: f64, v: f64| -> Vec<i32> {
-        let fx = c.borrow().fx.clone();
-        fx.color(u, v).iter().map(|&x| x as i32).collect()
+    g.set("__fx", Function::new(ctx.clone(), move |zone: String, u: f64, v: f64| -> Vec<i32> {
+        let (fx, dev) = { let s = c.borrow(); (s.fx.clone(), s.devkey.clone()) };
+        fx.color(&dev, &zone, u, v).iter().map(|&x| x as i32).collect()
+    }))?;
+    let c = s.clone();
+    g.set("__zone", Function::new(ctx.clone(), move |name: String| {
+        let zones = c.borrow().zones.clone();
+        let mut z = zones.lock().unwrap();
+        if !z.contains(&name) { z.push(name); }
     }))?;
     let c = s.clone();
     g.set("__hidProductId", Function::new(ctx.clone(), move || c.borrow().pid as i32))?;
@@ -192,11 +201,24 @@ pub struct RunReport { pub writes: usize, pub selected: Option<HidInfo>, pub fra
 /// How long to keep rendering.
 pub enum Until { Frames(usize), Stop { stop: Arc<AtomicBool>, fps: u32 } }
 
-pub struct RunOpts { pub live: bool, pub fx: Arc<Fx>, pub until: Until, pub hold: bool }
+pub struct RunOpts {
+    pub live: bool,
+    pub fx: Arc<Fx>,
+    pub until: Until,
+    pub hold: bool,
+    pub dev: String,
+    pub zones: Arc<Mutex<Vec<String>>>,
+}
+
+impl RunOpts {
+    pub fn once(live: bool, fx: Arc<Fx>, frames: usize, hold: bool) -> Self {
+        Self { live, fx, until: Until::Frames(frames), hold, dev: String::new(), zones: Default::default() }
+    }
+}
 
 pub fn run(src: &str, candidates: Vec<HidInfo>, o: RunOpts) -> Result<RunReport> {
     let live = o.live;
-    let s: Shared = Rc::new(RefCell::new(Session { live, fx: o.fx.clone(), candidates: candidates.clone(), ..Default::default() }));
+    let s: Shared = Rc::new(RefCell::new(Session { live, fx: o.fx.clone(), devkey: o.dev.clone(), zones: o.zones.clone(), candidates: candidates.clone(), ..Default::default() }));
     with_plugin(src, &s, |ctx, m| {
         let vid: Option<u16> = call_opt(ctx, m, "VendorId");
         if let Some(v) = vid { s.borrow_mut().vid = v; }

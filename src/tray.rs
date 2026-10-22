@@ -1,6 +1,6 @@
 //! StatusNotifier tray icon: shows the live colour, quick effect picks, and opens the web UI.
 use crate::daemon::{App, PORT};
-use crate::fx::{EFFECTS, Effect};
+use crate::fx::BUILTIN;
 use anyhow::{Result, anyhow};
 use ksni::blocking::TrayMethods;
 use ksni::menu::{CheckmarkItem, MenuItem, RadioGroup, RadioItem, StandardItem};
@@ -18,7 +18,7 @@ impl ksni::Tray for RefractTray {
     // A filled dot in whatever colour the lights are showing right now.
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         const N: i32 = 32;
-        let c = self.app.fx.color(0.5, 0.5);
+        let c = self.app.fx.color("", "", 0.5, 0.5);
         let mut data = Vec::with_capacity((N * N * 4) as usize);
         for y in 0..N {
             for x in 0..N {
@@ -35,19 +35,19 @@ impl ksni::Tray for RefractTray {
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let p = self.app.fx.params();
-        let selected = EFFECTS.iter().position(|(e, _)| *e == p.effect).unwrap_or(0);
+        let selected = BUILTIN.iter().position(|e| e.0 == p.effect).unwrap_or(0);
         vec![
             StandardItem { label: "Open controls".into(), activate: Box::new(|_| open_ui()), ..Default::default() }.into(),
             MenuItem::Separator,
             CheckmarkItem {
                 label: "Lights on".into(), checked: p.on,
-                activate: Box::new(|t: &mut Self| t.app.update(|s| s.on = !s.on)),
+                activate: Box::new(|t: &mut Self| t.app.update("", |s| s.on = !s.on)),
                 ..Default::default()
             }.into(),
             RadioGroup {
                 selected,
-                select: Box::new(|t: &mut Self, i| { let e: Effect = EFFECTS[i].0; t.app.update(|s| { s.effect = e; s.on = true; }) }),
-                options: EFFECTS.iter().map(|(_, n)| RadioItem { label: (*n).into(), ..Default::default() }).collect(),
+                select: Box::new(|t: &mut Self, i| { let e = BUILTIN[i].0; t.app.update("", |s| { s.effect = e.into(); s.on = true; }) }),
+                options: BUILTIN.iter().map(|e| RadioItem { label: e.1.into(), ..Default::default() }).collect(),
             }.into(),
             MenuItem::Separator,
             StandardItem { label: "Quit".into(), activate: Box::new(|t: &mut Self| t.app.quit()), ..Default::default() }.into(),
