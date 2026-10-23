@@ -3,7 +3,7 @@ use crate::daemon::{App, PORT};
 use crate::fx::BUILTIN;
 use anyhow::{Result, anyhow};
 use ksni::blocking::TrayMethods;
-use ksni::menu::{CheckmarkItem, MenuItem, RadioGroup, RadioItem, StandardItem};
+use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,17 +15,28 @@ impl ksni::Tray for RefractTray {
     fn category(&self) -> ksni::Category { ksni::Category::Hardware }
     fn icon_name(&self) -> String { String::new() }
 
-    // A filled dot in whatever colour the lights are showing right now.
+    // A light ring (visible on dark panels) with a dot inside in whatever colour the lights are
+    // showing right now. When off, or near-black, only the ring is drawn.
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         const N: i32 = 32;
         let c = self.app.fx.color("", "", 0.5, 0.5);
+        let dark = !self.app.fx.params().on || c.iter().map(|&v| v as u32).sum::<u32>() < 60;
         let mut data = Vec::with_capacity((N * N * 4) as usize);
         for y in 0..N {
             for x in 0..N {
                 let (dx, dy) = (x as f32 + 0.5 - N as f32 / 2.0, y as f32 + 0.5 - N as f32 / 2.0);
                 let d = (dx * dx + dy * dy).sqrt();
-                let a = (N as f32 / 2.0 - 2.0 - d + 0.5).clamp(0.0, 1.0); // antialiased edge
-                data.extend_from_slice(&[(a * 255.0) as u8, c[0], c[1], c[2]]);
+                let outer = (N as f32 / 2.0 - 2.0 - d + 0.5).clamp(0.0, 1.0); // antialiased edge
+                let ring = outer * (d - (N as f32 / 2.0 - 6.0) + 0.5).clamp(0.0, 1.0);
+                let dot = (N as f32 / 2.0 - 8.0 - d + 0.5).clamp(0.0, 1.0);
+                if dark || ring >= 1.0 && dot == 0.0 {
+                    data.extend_from_slice(&[(ring * 255.0) as u8, 200, 200, 200]);
+                } else {
+                    // ring over dot, blended where they meet
+                    let a = ring + dot * (1.0 - ring);
+                    let mix = |dc: u8| ((200.0 * ring + dc as f32 * dot * (1.0 - ring)) / a) as u8;
+                    data.extend_from_slice(&[(a * 255.0) as u8, mix(c[0]), mix(c[1]), mix(c[2])]);
+                }
             }
         }
         vec![ksni::Icon { width: N, height: N, data }]
@@ -39,8 +50,8 @@ impl ksni::Tray for RefractTray {
         vec![
             StandardItem { label: "Open controls".into(), activate: Box::new(|_| open_ui()), ..Default::default() }.into(),
             MenuItem::Separator,
-            CheckmarkItem {
-                label: "Lights on".into(), checked: p.on,
+            StandardItem {
+                label: if p.on { "💡  Lights on  (click to turn off)".into() } else { "🌙  Lights off  (click to turn on)".into() },
                 activate: Box::new(|t: &mut Self| t.app.update("", |s| s.on = !s.on)),
                 ..Default::default()
             }.into(),

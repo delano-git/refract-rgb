@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Refract RGB
+Comment=Control RGB lighting
+Exec=sh -c "systemctl --user start refract-rgb.service; xdg-open http://127.0.0.1:7878/"
+Icon=refract-rgb
+Terminal=false
+Categories=Settings;HardwareSettings;

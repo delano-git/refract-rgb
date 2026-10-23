@@ -97,7 +97,20 @@ pub fn run(plugins_override: Option<PathBuf>) -> Result<()> {
     });
 
     // The tray is optional: without a StatusNotifier host the web UI still works.
-    if let Err(e) = tray::spawn(app.clone()) { eprintln!("tray unavailable: {e:#}"); }
+    // At login the desktop's tray host may not be up yet, so keep retrying in the background.
+    let a = app.clone();
+    std::thread::spawn(move || {
+        let mut warned = false;
+        loop {
+            match tray::spawn(a.clone()) {
+                Ok(()) => break,
+                Err(e) => {
+                    if !warned { eprintln!("tray unavailable, will retry: {e:#}"); warned = true; }
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                }
+            }
+        }
+    });
     eprintln!("refract: controls at http://127.0.0.1:{PORT}/");
     web::serve(app, PORT).context("web server")
 }

@@ -26,6 +26,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$HOME/.local/bin/refract"
 RULE=/etc/udev/rules.d/70-refract-rgb.rules
 MODS=/etc/modules-load.d/refract-rgb.conf
+APPS="$HOME/.local/share/applications"
+ICON="$HOME/.local/share/icons/hicolor/scalable/apps/refract-rgb.svg"
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 run() { printf '    $ %s\n' "$*"; [ "$DRY" = 1 ] || "$@"; }
@@ -33,7 +35,7 @@ run() { printf '    $ %s\n' "$*"; [ "$DRY" = 1 ] || "$@"; }
 if [ "$UNINSTALL" = 1 ]; then
   say "Removing Refract RGB"
   run systemctl --user disable --now refract-rgb.service || true
-  run rm -f "$HOME/.config/systemd/user/refract-rgb.service" "$BIN"
+  run rm -f "$HOME/.config/systemd/user/refract-rgb.service" "$BIN" "$APPS/refract-rgb.desktop" "$ICON"
   run sudo rm -f "$RULE" "$MODS"
   run sudo udevadm control --reload
   echo; echo "Settings in ~/.config/refract-rgb were kept."
@@ -73,6 +75,11 @@ if [ "$SERVICE" = 1 ]; then
   if [ -n "$PLUGINS" ]; then export REFRACT_PLUGINS="$PLUGINS"; fi
   run "$BIN" install-service
 fi
+
+say "Adding the app launcher"
+run install -Dm644 "$ROOT/contrib/refract-rgb.desktop" "$APPS/refract-rgb.desktop"
+run install -Dm644 "$ROOT/assets/logo.svg" "$ICON"
+run update-desktop-database "$APPS" || true
 
 say "Done"
 echo "    Controls: http://127.0.0.1:7878/   (or the tray icon)"
