@@ -42,6 +42,16 @@ The script builds the binary, installs the udev rule, loads `i2c-dev`, adds you 
 
 Then open **http://127.0.0.1:7878/** or click the tray icon.
 
+**Ubuntu package.** Each [release](https://github.com/delano-git/refract-rgb/releases) has a `.deb` for Ubuntu 24.04 or newer (amd64):
+
+```sh
+sudo apt install ./refract-rgb_0.1.0_amd64.deb
+sudo usermod -aG plugdev "$USER"        # then log out and back in once
+systemctl --user enable --now refract-rgb.service
+```
+
+Windows is not supported yet.
+
 <details>
 <summary>Manual install</summary>
 
